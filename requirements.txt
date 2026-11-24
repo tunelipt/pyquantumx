@@ -1,0 +1,2 @@
+pythonnet>=3.0.5
+numpy<2.6
