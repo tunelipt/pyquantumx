@@ -7,3 +7,4 @@ dist/
 venv/
 pyvenv.cfg
 *.csv
+device_config.xml
