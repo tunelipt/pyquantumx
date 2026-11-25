@@ -110,6 +110,21 @@ print(qx.read_sensor(dev.uuid, 0).ConvertToXML())   # what the module stored
 switched to analog input if needed. The whole sensor is replaced, scaling included. Without
 `zero_span`, scaling is off and values are electrical (mV/V, V).
 
+### Signals and filters
+
+Each analog channel has up to 3 sync signals (`SyncSignals`), each with its own output
+rate, low-pass filter, unit and name. `qx.describe(uuid)` lists them per connector.
+
+```python
+qx.set_filter(dev.uuid, 100)                                   # all signals: Bessel 100 Hz
+qx.set_filter(dev.uuid, 500, "butterworth", connectors=[0, 1], signals=[0])
+qx.set_filter(dev.uuid, None, connectors=[2])                  # filter off
+```
+
+Cut-offs are rounded to the nearest value in `pyquantumx.filter_frequencies()`
+(0.01 Hz ... 20 kHz, from the internal `eFilterFrequencies` enum). Each signal is read,
+changed and written back, so its rate and unit are kept.
+
 The raw .NET objects are always reachable: `qx.S` (QXSystem), `qx.DAQ`
 (QXSimpleDAQ), `qx.read_device(uuid)` (Device object model), and
 `pyquantumx.net_type("eSensorTypes")` for enums/classes.

@@ -20,9 +20,13 @@ with QuantumX() as qx:
     for m in qx.modules():
         print(f"  module {m.uuid_hex}  type={m.device_type}" + (f"  (via {m.parent})" if m.parent else ""))
 
-    print("\nConnectors (sync-signal output rates in Hz):")
+    print("\nConnectors and their sync signals:")
     for row in qx.describe(dev.uuid):
-        print(f"  #{row['connector']}: {row['rates_hz']}")
+        print(f"  #{row['connector']} {row['type']}")
+        for s in row["signals"]:
+            f = s["filter"]
+            filt = f"{f['characteristic']} {f['cutoff_hz']} Hz" if f["cutoff_hz"] is not None else f["type"]
+            print(f"      signal {s['number']}: {s['name']!s:20} {s['rate_hz']} Hz  {s['unit']}  filter={filt}")
 
     # full configuration as XML, handy for finding sensor/channel names and units
     Path("device_config.xml").write_text(qx.device_xml(dev.uuid), encoding="utf-8")

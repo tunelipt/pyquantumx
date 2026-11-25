@@ -102,7 +102,28 @@ def net_type(name: str):
     raise AttributeError(f"{name} not found in HBM.DeviceComponents or HBM.QuantumX")
 
 
-_sample_rates: Optional[List[float]] = None
+_enum_hz_cache: Dict[str, List[float]] = {}
+
+
+def _internal_enum_hz(name: str) -> List[float]:
+    """Values (Hz, ascending) of an internal HBM.DeviceComponents enum stored in mHz."""
+    if name not in _enum_hz_cache:
+        import clr  # noqa: E402
+        import System  # type: ignore  # noqa: E402
+
+        asm = clr.GetClrType(load_api().dc.SyncSignal).Assembly
+        t = asm.GetType(f"HBM.DeviceComponents.{name}")
+        if t is None:
+            raise QuantumXError(f"HBM.DeviceComponents.{name} not found in the API DLL")
+        _enum_hz_cache[name] = sorted(System.Convert.ToInt64(v) / 1000.0 for v in System.Enum.GetValues(t))
+    return list(_enum_hz_cache[name])
+
+
+def _nearest(values: Sequence[float], hz: float, what: str) -> float:
+    """The value closest to hz, compared on a log scale."""
+    if hz <= 0:
+        raise ValueError(f"{what} must be positive, got {hz}")
+    return min(values, key=lambda v: abs(math.log(v / hz)))
 
 
 def sample_rates() -> List[float]:
@@ -112,24 +133,40 @@ def sample_rates() -> List[float]:
     for every module type: a given module supports only some of them (an MX840 tops out at
     19200 Hz), and the API has no per-module query.
     """
-    global _sample_rates
-    if _sample_rates is None:
-        import clr  # noqa: E402
-        import System  # type: ignore  # noqa: E402
-
-        asm = clr.GetClrType(load_api().dc.SyncSignal).Assembly
-        t = asm.GetType("HBM.DeviceComponents.eOutputRates")
-        if t is None:
-            raise QuantumXError("HBM.DeviceComponents.eOutputRates not found in the API DLL")
-        _sample_rates = sorted(System.Convert.ToInt64(v) / 1000.0 for v in System.Enum.GetValues(t))
-    return list(_sample_rates)
+    return _internal_enum_hz("eOutputRates")
 
 
 def nearest_sample_rate(rate_hz: float) -> float:
     """The rate in sample_rates() closest to rate_hz (compared on a log scale)."""
-    if rate_hz <= 0:
-        raise ValueError(f"Sample rate must be positive, got {rate_hz}")
-    return min(sample_rates(), key=lambda r: abs(math.log(r / rate_hz)))
+    return _nearest(sample_rates(), rate_hz, "Sample rate")
+
+
+def filter_frequencies() -> List[float]:
+    """All low-pass cut-off frequencies (Hz) the API knows, ascending (0.01 Hz ... 20 kHz).
+
+    Read from the internal enum HBM.DeviceComponents.eFilterFrequencies (values in mHz).
+    One list for every module type; the API has no per-module query.
+    """
+    return _internal_enum_hz("eFilterFrequencies")
+
+
+def nearest_filter_frequency(cutoff_hz: float) -> float:
+    """The cut-off in filter_frequencies() closest to cutoff_hz (compared on a log scale)."""
+    return _nearest(filter_frequencies(), cutoff_hz, "Filter frequency")
+
+
+def _filter_info(sig) -> Dict:
+    """{'type', 'characteristic', 'cutoff_hz'} of a SyncSignal's filter (None where not set)."""
+    ft = sig.FilterType
+    if ft is None:
+        return {"type": None, "characteristic": None, "cutoff_hz": None}
+    lp = ft.LowPass
+    on = str(ft.ActiveType) == "LOWPASS"
+    return {
+        "type": str(ft.ActiveType),
+        "characteristic": str(lp.FilterCharacteristic) if on and lp is not None else None,
+        "cutoff_hz": float(lp.FilterFrequency) if on and lp is not None and lp.FilterFrequency is not None else None,
+    }
 
 
 def _outs(result, n: int) -> tuple:
@@ -315,15 +352,29 @@ class QuantumX:
         return str(self.read_device(uuid).ConvertToXML())
 
     def describe(self, uuid) -> List[Dict]:
-        """Short summary per connector: index, analog-in sync-signal output rates."""
+        """Short summary per connector (0-based) and its analog-in sync signals.
+
+        Each row: {'connector', 'type', 'rates_hz', 'signal_numbers', 'signals'}, where
+        'signals' holds one dict per SyncSignal: number, name, rate_hz, unit, filter
+        (see set_filter). rates_hz / signal_numbers repeat those fields as lists.
+        """
         dev = self.read_device(uuid)
         rows = []
         for i, con in enumerate(dev.Connectors):
-            row = {"connector": i, "rates_hz": []}
+            row = {"connector": i, "type": str(con.ActiveType), "rates_hz": [], "signal_numbers": [], "signals": []}
             ain = getattr(con, "AnalogInChannel", None)
             if ain is not None and getattr(ain, "SyncSignals", None) is not None:
-                row["rates_hz"] = [s.OutputRate for s in ain.SyncSignals]
-                row["signal_numbers"] = [int(s.Number) for s in ain.SyncSignals]
+                for s in ain.SyncSignals:
+                    unit = str(s.OutputUnitUser) if s.OutputUnitUser else str(s.OutputUnit)
+                    row["signals"].append({
+                        "number": int(s.Number),
+                        "name": str(s.SignalName) if s.SignalName is not None else None,
+                        "rate_hz": float(s.OutputRate) if s.OutputRate is not None else None,
+                        "unit": unit,
+                        "filter": _filter_info(s),
+                    })
+                row["rates_hz"] = [d["rate_hz"] for d in row["signals"]]
+                row["signal_numbers"] = [d["number"] for d in row["signals"]]
             rows.append(row)
         return rows
 
@@ -418,15 +469,76 @@ class QuantumX:
         con = self.read_device(uuid).Connectors[connector]
         if con.ActiveType != ctypes_.ANALOG_IN_CHANNEL:
             self._call(self.S.AssignConnectorType, uuid, connector, ctypes_.ANALOG_IN_CHANNEL)
+        self._assign(self.S.AssignSensor, uuid, connector, sensor)
+        return self.read_sensor(uuid, connector)
+
+    def _assign(self, fn, *args) -> List[str]:
+        """Call an Assign* method. AssignFailed with warnings only (the module adjusted a value)
+        becomes a Python warning and returns the warning texts; real errors raise QuantumXError."""
+        name = getattr(fn, "__name__", str(fn))
         try:
-            self.S.AssignSensor(uuid, connector, sensor)
+            fn(*args)
+            return []
         except Exception as ex:
             probs = list(self.S.ReadLastProblems())
             if not (probs and all(str(p.Type).lower().startswith("warn") for p in probs)):
                 details = "; ".join(f"{p.Type}: {p.Text}" for p in probs)
-                raise QuantumXError(f"AssignSensor failed: {ex}" + (f" | {details}" if details else "")) from ex
-            warnings.warn("AssignSensor adjusted settings: " + "; ".join(str(p.Text) for p in probs), stacklevel=3)
-        return self.read_sensor(uuid, connector)
+                raise QuantumXError(f"{name} failed: {ex}" + (f" | {details}" if details else "")) from ex
+            texts = [str(p.Text) for p in probs]
+            warnings.warn(f"{name} adjusted settings: " + "; ".join(texts), stacklevel=3)
+            return texts
+
+    # -- signal filters ---------------------------------------------------------------------
+    def set_filter(self, uuid, cutoff_hz: Optional[float], characteristic: str = "bessel",
+                   connectors: Optional[Iterable[int]] = None,
+                   signals: Optional[Iterable[int]] = None) -> Dict[tuple, Dict]:
+        """Set the low-pass filter of analog-in sync signals.
+
+        Returns {(connector, signal Number): {'type', 'characteristic', 'cutoff_hz'}}.
+
+        cutoff_hz: cut-off frequency in Hz, rounded to the nearest value in
+        filter_frequencies() (with a warning if it changes); None turns the filter off.
+        characteristic: 'bessel' or 'butterworth'.
+        connectors: 0-based connector numbers (default: all analog-in connectors).
+        signals: indices into each channel's SyncSignals (default: all of them).
+        Each signal is read with ReadSyncSignal, so its other settings (rate, unit, ...) are
+        kept, and written back with AssignSyncSignal. The returned dicts come from reading the
+        signals back, so they show what the module actually stored.
+        """
+        ftypes = net_type("eFilterTypes")
+        fchar = getattr(net_type("eFilterCharacteristics"), characteristic.upper())
+        if cutoff_hz is not None:
+            requested = float(cutoff_hz)
+            cutoff_hz = nearest_filter_frequency(requested)
+            if cutoff_hz != requested:
+                warnings.warn(f"{requested} Hz is not an API filter frequency; using {cutoff_hz} Hz.", stacklevel=2)
+
+        dev = self.read_device(uuid)
+        idx = range(len(dev.Connectors)) if connectors is None else connectors
+        targets = []
+        for c in idx:
+            ain = dev.Connectors[c].AnalogInChannel
+            if ain is None or ain.SyncSignals is None:
+                if connectors is not None:
+                    raise QuantumXError(f"Connector {c} is not an analog input")
+                continue
+            n = len(ain.SyncSignals)
+            for j in (range(n) if signals is None else signals):
+                if j < n:
+                    targets.append((c, int(ain.SyncSignals[j].Number)))
+
+        out = {}
+        for c, number in targets:
+            sig = self._call(self.S.ReadSyncSignal, uuid, c, number)
+            if cutoff_hz is None:
+                sig.FilterType.ActiveType = ftypes.OFF
+            else:
+                sig.FilterType.ActiveType = ftypes.LOWPASS
+                sig.FilterType.LowPass.FilterCharacteristic = fchar
+                sig.FilterType.LowPass.FilterFrequency = float(cutoff_hz)
+            self._assign(self.S.AssignSyncSignal, uuid, c, sig)
+            out[(c, number)] = _filter_info(self.S.ReadSyncSignal(uuid, c, number))
+        return out
 
     def _new_sensor(self, kind: str, zero_span: Optional[Sequence[float]]):
         s = self.api.dc.Sensor()
