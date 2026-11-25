@@ -91,6 +91,25 @@ with QuantumX() as qx:
 all modules, so for several modules subscribe every signal yourself with a unique
 UserSignalID and call `StartDAQ(True)` once (see `examples\sync_record.py`).
 
+### Changing the sensor type
+
+```python
+# Connector 0 -> full bridge, 6-wire, 2.5 V excitation, scaled 0..2 mV/V -> 0..100
+qx.set_bridge(dev.uuid, 0, bridge="full", wiring=6, excitation=2.5,
+              max_electrical=2.0, zero_span=(0, 2, 100))
+qx.zero(dev.uuid, [0])
+
+# Connector 1 -> voltage input, 10 V range, no scaling (values in V)
+qx.set_voltage(dev.uuid, 1, max_electrical=10)
+
+print(qx.read_sensor(dev.uuid, 0).ConvertToXML())   # what the module stored
+```
+
+`set_bridge`/`set_voltage` build a .NET `Sensor` and call `set_sensor`, which also accepts a
+`Sensor` you build yourself (`qx.api.dc.Sensor()`) for other sensor types. The connector is
+switched to analog input if needed. The whole sensor is replaced, scaling included. Without
+`zero_span`, scaling is off and values are electrical (mV/V, V).
+
 The raw .NET objects are always reachable: `qx.S` (QXSystem), `qx.DAQ`
 (QXSimpleDAQ), `qx.read_device(uuid)` (Device object model), and
 `pyquantumx.net_type("eSensorTypes")` for enums/classes.

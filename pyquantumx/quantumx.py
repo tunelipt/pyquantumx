@@ -400,6 +400,89 @@ class QuantumX:
         for i in (range(n) if connectors is None else connectors):
             self._call(self.S.AssignTedsUsage, uuid, i, e)
 
+    # -- sensors --------------------------------------------------------------------------
+    def read_sensor(self, uuid, connector: int):
+        """The .NET Sensor object on a connector (0-based); .ConvertToXML() shows all settings."""
+        return self._call(self.S.ReadSensor, uuid, connector)
+
+    def set_sensor(self, uuid, connector: int, sensor) -> object:
+        """Assign a .NET Sensor object to a connector (0-based) and return what the module stored.
+
+        Switches the connector to analog input first if it isn't one already (AssignSensor
+        fails on an OFF or CAN bus connector). AssignSensor replaces the whole sensor,
+        scaling included. If the module only adjusts values (AssignFailed with warnings
+        only), a Python warning is issued and the adjusted sensor is returned; real errors
+        raise QuantumXError.
+        """
+        ctypes_ = net_type("eConnectorTypes")
+        con = self.read_device(uuid).Connectors[connector]
+        if con.ActiveType != ctypes_.ANALOG_IN_CHANNEL:
+            self._call(self.S.AssignConnectorType, uuid, connector, ctypes_.ANALOG_IN_CHANNEL)
+        try:
+            self.S.AssignSensor(uuid, connector, sensor)
+        except Exception as ex:
+            probs = list(self.S.ReadLastProblems())
+            if not (probs and all(str(p.Type).lower().startswith("warn") for p in probs)):
+                details = "; ".join(f"{p.Type}: {p.Text}" for p in probs)
+                raise QuantumXError(f"AssignSensor failed: {ex}" + (f" | {details}" if details else "")) from ex
+            warnings.warn("AssignSensor adjusted settings: " + "; ".join(str(p.Text) for p in probs), stacklevel=3)
+        return self.read_sensor(uuid, connector)
+
+    def _new_sensor(self, kind: str, zero_span: Optional[Sequence[float]]):
+        s = self.api.dc.Sensor()
+        s.SensorType.ActiveType = getattr(net_type("eSensorTypes"), kind)
+        scal = net_type("eScalingTypes")
+        if zero_span is None:
+            s.ScalingType.ActiveType = scal.OFF
+        else:
+            ez, es, ps = (float(v) for v in zero_span)
+            s.ScalingType.ActiveType = scal.ZEROSPAN
+            s.ScalingType.ZeroSpan.ElectricalZero = ez
+            s.ScalingType.ZeroSpan.ElectricalSpan = es
+            s.ScalingType.ZeroSpan.PhysicalSpan = ps
+        return s
+
+    def set_bridge(self, uuid, connector: int, bridge: str = "full", wiring: int = 6,
+                   excitation: float = 2.5, max_electrical: Optional[float] = None,
+                   excite_frequency: Optional[str] = None,
+                   zero_span: Optional[Sequence[float]] = None) -> object:
+        """Make a connector (0-based) a bridge input (strain gauge / load cell transducer).
+
+        bridge: 'full', 'half' or 'quarter'. wiring: 2..6 wires. excitation: volts (the API
+        lists 1 and 2.5 V). max_electrical: measuring range, presumably in mV/V (module default
+        if None). excite_frequency: 'AUTO', 'DC', 'Hz_75', 'Hz_225', 'Hz_600', 'Hz_4800' or
+        'Hz_9600' (module default if None).
+        zero_span: (electrical_zero, electrical_span, physical_span) for ZEROSPAN scaling,
+        e.g. (0, 2, 100) maps 0..2 mV/V to 0..100. None = no scaling (electrical value).
+        Zero the input afterwards with zero(). Returns the Sensor the module stored.
+        """
+        s = self._new_sensor("BRIDGE", zero_span)
+        b = s.SensorType.Bridge
+        b.BridgeType = getattr(net_type("eBridgeTypes"), bridge.upper())
+        b.Wiring = getattr(net_type("eWirings"), f"WIRE_{int(wiring)}")
+        b.ExciteAmplitude = float(excitation)
+        if max_electrical is not None:
+            b.MaxElectrical = float(max_electrical)
+        if excite_frequency is not None:
+            ef = excite_frequency.strip()
+            ef = "Hz_" + ef[3:] if ef.lower().startswith("hz_") else ef.upper()
+            b.ExciteFrequency = getattr(net_type("eExcitationFrequencies"), ef)
+        return self.set_sensor(uuid, connector, s)
+
+    def set_voltage(self, uuid, connector: int, max_electrical: Optional[float] = None,
+                    zero_span: Optional[Sequence[float]] = None) -> object:
+        """Make a connector (0-based) a voltage input.
+
+        max_electrical: measuring range in V (module default if None).
+        zero_span: (electrical_zero, electrical_span, physical_span) for ZEROSPAN scaling,
+        e.g. (0, 10, 500) maps 0..10 V to 0..500. None = no scaling (volts).
+        Returns the Sensor the module stored.
+        """
+        s = self._new_sensor("VOLTAGE", zero_span)
+        if max_electrical is not None:
+            s.SensorType.Voltage.MaxElectrical = float(max_electrical)
+        return self.set_sensor(uuid, connector, s)
+
     def rename(self, uuid, name: str) -> None:
         self._call(self.S.AssignModuleName, uuid, name)
 
