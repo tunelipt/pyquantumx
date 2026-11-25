@@ -14,7 +14,7 @@ try:
 except ImportError:
     sys.exit("pythonnet missing -> pip install -r requirements.txt")
 
-from qxpy import QuantumX, QuantumXError
+from pyquantumx import QuantumX, QuantumXError
 
 try:
     with QuantumX(sys.argv[1] if len(sys.argv) > 1 else None) as qx:

@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qxpy import QuantumX  # noqa: E402
+from pyquantumx import QuantumX  # noqa: E402
 
 with QuantumX() as qx:
     found = qx.scan()

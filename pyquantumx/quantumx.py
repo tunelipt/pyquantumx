@@ -30,13 +30,9 @@ from typing import Dict, Iterable, List, Optional, Sequence, Union
 
 import numpy as np
 
-# API matching the module firmware (2009 API) first, then the 2012 API as a fallback.
-_PROJECTS_DIR = Path(__file__).resolve().parents[2]
-_API_DIR_CANDIDATES = [
-    _PROJECTS_DIR / "correct-firmaware-QuantumX API" / "DLLs",
-    _PROJECTS_DIR / "QuantumX API" / "DLLs",
-]
-DEFAULT_API_DIR = next((p for p in _API_DIR_CANDIDATES if p.is_dir()), _API_DIR_CANDIDATES[-1])
+# 2009 API (HBM.QuantumX.dll 1.5.x) that matches the module firmware, in a
+# "QuantumX API" folder next to the repository checkout.
+DEFAULT_API_DIR = Path(__file__).resolve().parents[2] / "QuantumX API" / "DLLs"
 REQUIRED_FILES = ("HBM.QuantumX.dll", "HBM.DeviceComponents.dll", "HBM_QX_Framework.dll")
 
 _api: Optional[SimpleNamespace] = None
@@ -67,7 +63,10 @@ def load_api(api_dir: Union[str, Path, None] = None) -> SimpleNamespace:
     api_dir = Path(api_dir or os.environ.get("QX_API_DIR") or DEFAULT_API_DIR).resolve()
     missing = [f for f in REQUIRED_FILES if not (api_dir / f).is_file()]
     if missing:
-        raise QuantumXError(f"Missing in {api_dir}: {', '.join(missing)}")
+        raise QuantumXError(
+            f"Missing in {api_dir}: {', '.join(missing)}. "
+            "Set QX_API_DIR or pass api_dir= to point at the QuantumX API DLLs folder."
+        )
 
     # Make the native HBM_QX_Framework.dll findable for the .NET P/Invoke calls.
     os.environ["PATH"] = str(api_dir) + os.pathsep + os.environ.get("PATH", "")
@@ -101,6 +100,36 @@ def net_type(name: str):
         if hasattr(ns, name):
             return getattr(ns, name)
     raise AttributeError(f"{name} not found in HBM.DeviceComponents or HBM.QuantumX")
+
+
+_sample_rates: Optional[List[float]] = None
+
+
+def sample_rates() -> List[float]:
+    """All output rates (Hz) the API knows, ascending, from HBM.DeviceComponents.eOutputRates.
+
+    The enum is internal, so it is read by reflection; its values are in mHz. This is one list
+    for every module type: a given module supports only some of them (an MX840 tops out at
+    19200 Hz), and the API has no per-module query.
+    """
+    global _sample_rates
+    if _sample_rates is None:
+        import clr  # noqa: E402
+        import System  # type: ignore  # noqa: E402
+
+        asm = clr.GetClrType(load_api().dc.SyncSignal).Assembly
+        t = asm.GetType("HBM.DeviceComponents.eOutputRates")
+        if t is None:
+            raise QuantumXError("HBM.DeviceComponents.eOutputRates not found in the API DLL")
+        _sample_rates = sorted(System.Convert.ToInt64(v) / 1000.0 for v in System.Enum.GetValues(t))
+    return list(_sample_rates)
+
+
+def nearest_sample_rate(rate_hz: float) -> float:
+    """The rate in sample_rates() closest to rate_hz (compared on a log scale)."""
+    if rate_hz <= 0:
+        raise ValueError(f"Sample rate must be positive, got {rate_hz}")
+    return min(sample_rates(), key=lambda r: abs(math.log(r / rate_hz)))
 
 
 def _outs(result, n: int) -> tuple:
@@ -301,12 +330,17 @@ class QuantumX:
     def set_sample_rate(self, uuid, rate_hz: float, connectors: Optional[Iterable[int]] = None) -> Dict[int, float]:
         """Set the output rate of the analog-in sync signals and return {connector: rate actually set}.
 
-        The module only accepts certain rates. If the requested one isn't possible it aligns to
-        the nearest allowed rate (e.g. 1000 -> 1200 Hz on an MX840) and the API raises
+        rate_hz is first rounded to the nearest rate in sample_rates() (e.g. 1000 -> 1200 Hz),
+        with a Python warning. A module supports only part of that list; if it rejects the rate
+        (e.g. 48000 Hz on an MX840) it aligns to the nearest rate it allows and the API raises
         AssignFailed with warnings only. That case is treated as success: a Python warning is
         issued and the aligned rate is returned. Real errors still raise QuantumXError.
-        Signal 2 of a channel (if present) is capped at 2400 Hz.
+        Signal 2 of a channel (if present) is capped at 19200 Hz.
         """
+        requested = rate_hz
+        rate_hz = nearest_sample_rate(float(rate_hz))
+        if rate_hz != requested:
+            warnings.warn(f"{requested} Hz is not an API output rate; using {rate_hz} Hz.", stacklevel=2)
         dev = self.read_device(uuid)
         idx = list(range(len(dev.Connectors)) if connectors is None else connectors)
 
@@ -317,7 +351,7 @@ class QuantumX:
                 if ain is None:
                     continue
                 for j, sig in enumerate(ain.SyncSignals):
-                    sig.OutputRate = min(r, 2400.0) if j == 1 else float(r)
+                    sig.OutputRate = min(r, 19200.0) if j == 1 else float(r)
             try:
                 self.S.AssignConnectors(uuid, d)
                 return []
@@ -342,7 +376,7 @@ class QuantumX:
                 apply({i: r for i, r in aligned.items() if i in idx})
                 actual = self._rates(uuid, idx)
             uniq = sorted(set(actual.values()))
-            warnings.warn(f"Requested {rate_hz} Hz is not available; module set {uniq} Hz.", stacklevel=2)
+            warnings.warn(f"{rate_hz} Hz is not supported by this module; module set {uniq} Hz.", stacklevel=2)
         return actual
 
     def _rates(self, uuid, connectors: Iterable[int]) -> Dict[int, float]:

@@ -48,8 +48,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qxpy import QuantumX, QuantumXError, net_type  # noqa: E402
-from qxpy.quantumx import NTP_EPOCH_2000_UNIX, _array, _outs  # noqa: E402
+from pyquantumx import QuantumX, QuantumXError, net_type  # noqa: E402
+from pyquantumx.quantumx import NTP_EPOCH_2000_UNIX, _array, _outs  # noqa: E402
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0],
                              epilog="example: --channels 192.168.0.217:1,2 192.168.0.218:1-3")

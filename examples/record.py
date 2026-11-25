@@ -17,8 +17,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qxpy import QuantumX  # noqa: E402
-from qxpy.quantumx import NTP_EPOCH_2000_UNIX  # noqa: E402
+from pyquantumx import QuantumX  # noqa: E402
+from pyquantumx.quantumx import NTP_EPOCH_2000_UNIX  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--module", help="IP, name or UUID hex (default: first found)")
