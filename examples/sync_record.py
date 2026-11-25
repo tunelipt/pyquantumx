@@ -2,22 +2,22 @@
 
 Choosing modules and connectors
 -------------------------------
-Connector numbers are 1-based, as printed on the module.
+Connector numbers are 0-based (socket 1 on the module is connector 0).
 
 A) Different connectors on each module: one --channels entry per module, MODULE:CONNECTORS
    (MODULE = IP, name or UUID hex; CONNECTORS = comma-separated list, ranges allowed):
 
-    python examples/sync_record.py --channels 192.168.0.217:1 192.168.0.218:1-3
-    python examples/sync_record.py --channels 192.168.0.217:1,4,5 192.168.0.218:2,7 --rate 2400
+    python examples/sync_record.py --channels 192.168.0.217:0 192.168.0.218:0-2
+    python examples/sync_record.py --channels 192.168.0.217:0,3,4 192.168.0.218:1,6 --rate 2400
 
 B) The same connectors on every module: --modules + --connectors
 
-    python examples/sync_record.py --modules 192.168.0.217 192.168.0.218 --connectors 1 2 3
-    python examples/sync_record.py --connectors 1 2      # every module found, connectors 1 and 2
+    python examples/sync_record.py --modules 192.168.0.217 192.168.0.218 --connectors 0 1 2
+    python examples/sync_record.py --connectors 0 1      # every module found, connectors 0 and 1
 
 Other options:
 
-    python examples/sync_record.py --channels 192.168.0.217:1 192.168.0.218:1 --seconds 60 --out run.csv
+    python examples/sync_record.py --channels 192.168.0.217:0 192.168.0.218:0 --seconds 60 --out run.csv
     python examples/sync_record.py ... --no-sync          # free-running start, for comparison
 
 How it works
@@ -35,7 +35,7 @@ How it works
   latest common start are dropped) and cut to the shortest length.
 
 Column names are <module name>_c<connector>; the IP is appended to the name when several
-modules have the same name (e.g. MX840@192.168.0.217_c1).
+modules have the same name (e.g. MX840@192.168.0.217_c0).
 """
 import argparse
 import csv
@@ -54,12 +54,12 @@ from pyquantumx.quantumx import NTP_EPOCH_2000_UNIX, _array, _outs  # noqa: E402
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0],
                              epilog="example: --channels 192.168.0.217:1,2 192.168.0.218:1-3")
 ap.add_argument("--channels", nargs="+", metavar="MODULE:CONNECTORS",
-                help="per-module connectors, e.g. 192.168.0.217:1,2 192.168.0.218:1-3 "
+                help="per-module connectors, e.g. 192.168.0.217:0,1 192.168.0.218:0-2 "
                      "(overrides --modules/--connectors)")
 ap.add_argument("--modules", nargs="+", help="IPs / names / UUID hex (default: every module found)")
 ap.add_argument("--adapter", type=int, nargs="*", help="network adapter index(es) to scan (see check_env.py)")
-ap.add_argument("--connectors", type=int, nargs="+", default=list(range(1, 9)),
-                help="1-based connectors recorded on EVERY module given by --modules (default: 1..8)")
+ap.add_argument("--connectors", type=int, nargs="+", default=list(range(8)),
+                help="0-based connectors recorded on EVERY module given by --modules (default: 0..7)")
 ap.add_argument("--rate", type=float, default=1200.0, help="sample rate in Hz set on all modules")
 ap.add_argument("--seconds", type=float, default=10.0)
 ap.add_argument("--poll", type=float, default=0.1, help="poll interval in s")
@@ -70,14 +70,14 @@ args = ap.parse_args()
 
 
 def parse_connectors(text):
-    """'1,3-5' -> [0, 2, 3, 4] (0-based for the API)."""
+    """'0,2-4' -> [0, 2, 3, 4] (0-based connector numbers)."""
     out = []
     for part in text.split(","):
         a, _, b = part.strip().partition("-")
         out.extend(range(int(a), int(b or a) + 1))
-    if not out or min(out) < 1:
+    if not out or min(out) < 0:
         raise ValueError(text)
-    return [c - 1 for c in dict.fromkeys(out)]
+    return list(dict.fromkeys(out))
 
 
 # selection = list of (module target, [0-based connectors])
@@ -104,7 +104,7 @@ with QuantumX() as qx:
     found = qx.scan(args.adapter or None)
     print("Found:", *(f"  {s}" for s in found), sep="\n")
     if selection is None:
-        cons_all = [c - 1 for c in args.connectors]
+        cons_all = list(args.connectors)
         selection = [(t, cons_all) for t in (args.modules or [s.ip for s in found])]
     if not selection:
         sys.exit("No QuantumX module found.")
@@ -114,13 +114,13 @@ with QuantumX() as qx:
     names = [label(d) for d in devs]
     labels = [f"{n}@{d.ip}" if names.count(n) > 1 else n for n, d in zip(names, devs)]
     for lab, d, cons in zip(labels, devs, module_cons):
-        print(f"Connected: {lab:24} {d.ip}  UUID={d.uuid_hex}  connectors={[c + 1 for c in cons]}")
+        print(f"Connected: {lab:24} {d.ip}  UUID={d.uuid_hex}  connectors={cons}")
 
     # ---- 2. same sample rate everywhere -------------------------------------------------
     rates = {}
     for lab, d, cons in zip(labels, devs, module_cons):
         n_con = len(qx.read_device(d.uuid).Connectors)
-        bad = [c + 1 for c in cons if c >= n_con]
+        bad = [c for c in cons if c >= n_con]
         if bad:
             sys.exit(f"{lab} has only {n_con} connectors; cannot use {bad}.")
         for c, r in qx.set_sample_rate(d.uuid, args.rate, cons).items():
@@ -143,7 +143,7 @@ with QuantumX() as qx:
             try:
                 qx._call(qx.DAQ.SubscribeSignal, d.uuid, c, 0, number, ctype, sid, nbytes)
             except QuantumXError as ex:
-                sys.exit(f"Subscribing {lab} connector {c + 1} failed: {ex}")
+                sys.exit(f"Subscribing {lab} connector {c} failed: {ex}")
             channels.append((sid, lab, c))
     print(f"Subscribed {len(channels)} signals from {len(devs)} module(s)")
 
@@ -219,7 +219,7 @@ with QuantumX() as qx:
         f.write(f"# start={start} (module clock)  rate={rate} Hz  synchronized_start={sync}  "
                 f"modules={' '.join(f'{lab}={d.ip}' for lab, d in zip(labels, devs))}\n")
         w = csv.writer(f)
-        w.writerow(["time_s"] + [f"{lab}_c{c + 1}" for _, lab, c in channels])
+        w.writerow(["time_s"] + [f"{lab}_c{c}" for _, lab, c in channels])
         for i in range(n):
             w.writerow([f"{t[i]:.6f}"] + [f"{V[sid][i]:.6g}" for sid, _, _ in channels])
     print(f"Wrote {n} rows x {len(channels)} channels ({n / rate:.2f} s) to {args.out}")

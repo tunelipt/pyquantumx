@@ -507,7 +507,7 @@ class Acquisition:
                 qx._call(qx.DAQ.SubscribeSignal, uuid, con, 0, number, ctype, slot, nbytes)
             except QuantumXError as ex:
                 raise QuantumXError(
-                    f"Subscribing connector {con + 1} (index {con}, signal number {number}, "
+                    f"Subscribing connector {con} (signal number {number}, "
                     f"rate={rate} Hz, buffer={nbytes} bytes) failed: {ex}") from ex
             self._slots[slot] = con
         self.running = False

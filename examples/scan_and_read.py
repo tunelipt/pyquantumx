@@ -22,7 +22,7 @@ with QuantumX() as qx:
 
     print("\nConnectors (sync-signal output rates in Hz):")
     for row in qx.describe(dev.uuid):
-        print(f"  #{row['connector'] + 1}: {row['rates_hz']}")
+        print(f"  #{row['connector']}: {row['rates_hz']}")
 
     # full configuration as XML, handy for finding sensor/channel names and units
     Path("device_config.xml").write_text(qx.device_xml(dev.uuid), encoding="utf-8")

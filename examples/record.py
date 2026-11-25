@@ -1,9 +1,9 @@
 """Record analog-in channels continuously to a CSV file.
 
-    python examples/record.py --connectors 1 2 3 --rate 1200 --seconds 10 --out run1.csv
-    python examples/record.py --module 192.168.1.20 --adapter 1 --connectors 1 --seconds 5
+    python examples/record.py --connectors 0 1 2 --rate 1200 --seconds 10 --out run1.csv
+    python examples/record.py --module 192.168.1.20 --adapter 1 --connectors 0 --seconds 5
 
-Connector numbers are as printed on the module (1-based). The time column comes from the
+Connector numbers are 0-based (socket 1 on the module is connector 0). The time column comes from the
 module's own per-sample timestamps (taken from the first channel), relative to the first
 sample; the absolute UTC start time is written in the first line of the file.
 """
@@ -23,13 +23,13 @@ from pyquantumx.quantumx import NTP_EPOCH_2000_UNIX  # noqa: E402
 ap = argparse.ArgumentParser()
 ap.add_argument("--module", help="IP, name or UUID hex (default: first found)")
 ap.add_argument("--adapter", type=int, nargs="*", help="network adapter index(es) to scan (see check_env.py)")
-ap.add_argument("--connectors", type=int, nargs="+", default=[1], help="1-based connector numbers")
+ap.add_argument("--connectors", type=int, nargs="+", default=[0], help="0-based connector numbers")
 ap.add_argument("--rate", type=float, help="set this sample rate (Hz) on the module first")
 ap.add_argument("--seconds", type=float, default=10.0)
 ap.add_argument("--poll", type=float, default=0.1, help="poll interval in s")
 ap.add_argument("--out", default="recording.csv")
 args = ap.parse_args()
-cons = [c - 1 for c in args.connectors]  # API is 0-based
+cons = list(args.connectors)
 
 with QuantumX() as qx:
     found = qx.scan(args.adapter or None)
@@ -43,7 +43,7 @@ with QuantumX() as qx:
 
     t_parts, v_parts = [], {c: [] for c in cons}
     with qx.acquisition(dev.uuid, cons) as acq:
-        print("Rates (Hz):", {c + 1: r for c, r in acq.rates.items()})
+        print("Rates (Hz):", dict(acq.rates))
 
         def collect():
             chunks = acq.poll()
@@ -80,7 +80,7 @@ with QuantumX() as qx:
     with open(args.out, "w", newline="") as f:
         f.write(header + "\n")
         w = csv.writer(f)
-        w.writerow(["time_s"] + [f"connector_{c + 1}" for c in cons])
+        w.writerow(["time_s"] + [f"connector_{c}" for c in cons])
         for i in range(n):
             w.writerow([f"{t[i] - t0:.6f}"] + [f"{cols[c][i]:.6g}" for c in cons])
     print(f"Wrote {n} rows x {len(cons)} channels to {args.out}")

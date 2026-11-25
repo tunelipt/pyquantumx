@@ -38,9 +38,12 @@ adapters and any QuantumX modules found on the network.
 
 ## Examples
 
+Connector numbers are **0-based** everywhere, in the scripts and in the library, matching
+the .NET API: socket 1 on the module is connector 0, socket 8 of an MX840 is connector 7.
+
 ```bat
 python examples\scan_and_read.py                  :: config summary + live values
-python examples\record.py --connectors 1 2 3 --rate 1200 --seconds 10 --out run1.csv
+python examples\record.py --connectors 0 1 2 --rate 1200 --seconds 10 --out run1.csv
 ```
 
 ### Several modules, synchronized (`examples\sync_record.py`)
@@ -51,20 +54,20 @@ channel uses the same sample rate (`--rate`, default 1200 Hz), which is set on
 the modules.
 
 Different connectors on each module — one `--channels MODULE:CONNECTORS` entry per module
-(MODULE = IP, name or UUID hex; connectors 1-based, comma-separated, ranges allowed):
+(MODULE = IP, name or UUID hex; connectors 0-based, comma-separated, ranges allowed):
 
 ```bat
-python examples\sync_record.py --channels 192.168.0.217:1 192.168.0.218:1-3 --seconds 10 --out run.csv
-python examples\sync_record.py --channels 192.168.0.217:1,4,5 192.168.0.218:2,7 --rate 2400
+python examples\sync_record.py --channels 192.168.0.217:0 192.168.0.218:0-2 --seconds 10 --out run.csv
+python examples\sync_record.py --channels 192.168.0.217:0,3,4 192.168.0.218:1,6 --rate 2400
 ```
 
 Same connectors on every module (all modules found if `--modules` is omitted):
 
 ```bat
-python examples\sync_record.py --modules 192.168.0.217 192.168.0.218 --connectors 1 2 3
+python examples\sync_record.py --modules 192.168.0.217 192.168.0.218 --connectors 0 1 2
 ```
 
-Columns are named `<module>_c<connector>`, e.g. `MX840@192.168.0.217_c1`. The script
+Columns are named `<module>_c<connector>`, e.g. `MX840@192.168.0.217_c0`. The script
 prints each module's first timestamp. A spread of 0 means the start was synchronized.
 For a synchronized start the modules must also be linked by the FireWire (IEEE 1394)
 cable. Without it, the modules' clocks run independently and the script prints a warning.
@@ -78,7 +81,7 @@ from pyquantumx import QuantumX
 with QuantumX() as qx:
     dev = qx.connect(qx.scan()[0])          # or qx.connect("192.168.1.20")
     print(qx.describe(dev.uuid))
-    print(qx.read_single(dev.uuid, connector=0))   # connectors are 0-based in the API
+    print(qx.read_single(dev.uuid, connector=0))   # connectors are 0-based
     with qx.acquisition(dev.uuid, connectors=[0, 1]) as acq:
         chunks = acq.poll()                  # {connector: Chunk(t, values, states)}
         print(chunks[0].values, chunks[0].unix_time())
